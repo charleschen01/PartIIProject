@@ -7,7 +7,8 @@ entitylist = []
 relationlist = []
 
 for datatype in ['train', 'valid', 'test']:
-    f = open("./wn18_subset/wn18_%s_subset.txt" % datatype, 'r')
+    # f = open("./wn18_subset/wn18_%s_subset.txt" % datatype, 'r')
+    f = open("./wn18/wordnet-mlj12-%s.txt" % datatype, 'r')
     data = f.readlines()
     f.close()
 
@@ -44,10 +45,14 @@ for i in relset:
     id2relation[relation_id] = i
     relation_id += 1
 
-f1 = open('./data/wn18_subset_entity2id', 'wb')
-f2 = open('./data/wn18_subset_id2entity', 'wb')
-f3 = open('./data/wn18_subset_relation2id', 'wb')
-f4 = open('./data/wn18_subset_id2relation', 'wb')
+# f1 = open('./data/wn18_subset_entity2id', 'wb')
+# f2 = open('./data/wn18_subset_id2entity', 'wb')
+# f3 = open('./data/wn18_subset_relation2id', 'wb')
+# f4 = open('./data/wn18_subset_id2relation', 'wb')
+f1 = open('./data/wn18_entity2id', 'wb')
+f2 = open('./data/wn18_id2entity', 'wb')
+f3 = open('./data/wn18_relation2id', 'wb')
+f4 = open('./data/wn18_id2relation', 'wb')
 pickle.dump(entity2id, f1)
 pickle.dump(id2entity, f2)
 pickle.dump(relation2id, f3)
@@ -60,7 +65,8 @@ f4.close()
 # create dataset files
 
 for datatype in ['train', 'valid', 'test']:
-    f = open("./wn18_subset/wn18_%s_subset.txt" % datatype, 'r')
+    # f = open("./wn18_subset/wn18_%s_subset.txt" % datatype, 'r')
+    f = open("./wn18/wordnet-mlj12-%s.txt" % datatype, 'r')
     data = f.readlines()
     f.close()
 
@@ -77,9 +83,9 @@ for datatype in ['train', 'valid', 'test']:
         input_rel[relation2id[rel], j] = 1
         j += 1
 
-    f = open('./data/wn18_subset_%s_lhs' % datatype, 'wb')
-    g = open('./data/wn18_subset_%s_rhs' % datatype, 'wb')
-    h = open('./data/wn18_subset_%s_rel' % datatype, 'wb')
+    f = open('./data/wn18_%s_lhs' % datatype, 'wb')
+    g = open('./data/wn18_%s_rhs' % datatype, 'wb')
+    h = open('./data/wn18_%s_rel' % datatype, 'wb')
     pickle.dump(input_left.tocsr(), f)
     pickle.dump(input_right.tocsr(), g)
     pickle.dump(input_rel.tocsr(), h)
