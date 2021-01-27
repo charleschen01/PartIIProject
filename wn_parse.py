@@ -23,6 +23,7 @@ relset = np.sort(list(set(relationlist)))
 
 print("{} entities".format(len(entityset)))
 print("{} relations".format(len(relset)))
+print(relset)
 
 
 # we now fill in the dictionaries
