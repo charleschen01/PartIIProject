@@ -79,6 +79,9 @@ for datatype in ['train', 'valid', 'test']:
     j = 0
     for triplet in data:
         lhs, rel, rhs = triplet[:-1].split('\t')
+        # if lhs == rhs, we do not add the data
+        if lhs == rhs:
+            continue
         input_left[entity2id[lhs], j] = 1
         input_right[entity2id[rhs], j] = 1
         input_rel[relation2id[rel], j] = 1

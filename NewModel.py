@@ -7,20 +7,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# input a 1D tensor, output a 1D tensor
-def L2Norm(tensor_1d):
-    return torch.sqrt(torch.sum(torch.square(tensor_1d)))
+# input a list of embeddings in the form of tensor, output a list of values in tensor as well
+def L2Norm(embedding):
+    return torch.sqrt(torch.sum(torch.square(embedding),dim=1))
+
+def L1Norm(embedding):
+    return torch.sum(torch.abs(embedding),dim=1)
 
 
 class NewModel(nn.Module):
 
-    def __init__(self, numEntity, numRelation, margin, dimension=20):
+    def __init__(self, numEntity, numRelation, margin, simi, dimension):
         super(NewModel, self).__init__()
 
         self.numEntity = numEntity
         self.numRelation = numRelation
         self.dimension = dimension
         self.margin = margin
+
+        if simi == "L1":
+            self.simiFunc = L1Norm
+        elif simi == "L2":
+            self.simiFunc = L2Norm
 
         # {'_also_see': 0, '_derivationally_related_form': 1, '_has_part': 2, '_hypernym': 3, '_hyponym': 4,
         #  '_instance_hypernym': 5, '_instance_hyponym': 6, '_member_holonym': 7, '_member_meronym': 8,
@@ -59,11 +67,26 @@ class NewModel(nn.Module):
 
         # we define the second layer in the forward function because there's no available function to use
 
+    # a function to decide which group a relation belongs
+    def relGroup(self, i):
+        if i in self.hyponym_set:
+            return 0
+        elif i in self.hypernym_set:
+            return 1
+        elif i in self.synonym_set:
+            return 2
+        else:
+            # translation
+            return 3
+
     def forward(self, x):
 
         # we pass in indices for relation, entities as well as negative entities
         # these indices are in the form of long tensor
-        leftEnIndices, rightEnIndices, relIndices, negLeftEnIndices, negRightEnIndices = x
+        # group is an integer, denoting the relation group this batch belongs
+        leftEnIndices, rightEnIndices, relIndices, negLeftEnIndices, negRightEnIndices, group = x
+
+        # here we guarantee that the batch of extended triplets all belong to the same relation
 
         # pass the data through our first layer to get a list of embeddings
         # the list of embeddings come in the form of tensor as well
@@ -81,24 +104,19 @@ class NewModel(nn.Module):
 
         # correctness score for the original triplet
         # crt is now a list of numbers
-        crt = self.crtFunc(leftEnVec, leftEnBias, relIndices, rightEnVec, rightEnBias)
+        crt = self.crtFunc(leftEnVec, leftEnBias, relIndices, rightEnVec, rightEnBias, group)
 
-        # print("Triplet crt score: %s" % crt)
+        # correctness score for the triplets where left is negative
+        crtln = self.crtFunc(negLeftEnVec, negLeftEnBias, relIndices, rightEnVec, rightEnBias, group)
 
-        # correctness score for the triplet where left is negative
-        crtln = self.crtFunc(negLeftEnVec, negLeftEnBias, relIndices, rightEnVec, rightEnBias)
-
-        # print("Left neg crt score: %s" % crtln)
-
-        # correctness score for the triplet where right is negative
-        crtrn = self.crtFunc(leftEnVec, leftEnBias, relIndices, negRightEnVec, negRightEnBias)
-
-        # print("Right neg crt score: %s" % crtrn)
+        # correctness score for the triplets where right is negative
+        crtrn = self.crtFunc(leftEnVec, leftEnBias, relIndices, negRightEnVec, negRightEnBias, group)
 
         costl = self.margincost(crt, crtln, self.margin)
         costr = self.margincost(crt, crtrn, self.margin)
         cost = costl + costr
 
+        # DEBUG: to find nan value in predicate embeddings
         for i, x in enumerate(cost):
             if math.isnan(x):
                 print("Found nan in %s" % i)
@@ -129,49 +147,45 @@ class NewModel(nn.Module):
         return torch.mean(cost)
         # we take average so the final output is only one value
 
-    # we return a tensor of correctness scores here
-    def crtFunc(self, leftEnVec, leftEnBias, relIndices, rightEnVec, rightEnBias):
-        crtScores = torch.empty(len(relIndices))
-        for i in range(len(relIndices)):
-            crtScores[i] = self.crtScore(leftEnVec[i], leftEnBias[i], relIndices[i], rightEnVec[i], rightEnBias[i])
-        return crtScores
-
-    # calculate correct score for one triplet, based on which relation we are dealing with
-    # return a single positive score tensor
-    # relIndex is a long tensor, others are embeddings
-    def crtScore(self, leftVec, leftBias, relIndex, rightVec, rightBias):
-        # hyponym
-        # TODO: okay, we cannot really do this on tensor
-        if relIndex.item() in self.hyponym_set:
+    def crtFunc(self, leftEnVec, leftEnBias, relIndices, rightEnVec, rightEnBias, group):
+        # the first five inputs are list of embeddings in the form of Tensor
+        # output: a list of correctness scores, in the form of Tensor
+        # we are only using relation embeddings when we are in the translation case
+        if group == 0:
+            # hyponym
             # A <-> B; B is a hyponym of A, A is more general than B
             # (|v1-v2|L2 - (a1-a2))+
-            vecDiff = L2Norm(leftVec - rightVec)
-            biasDiff = leftBias-rightBias
+            vecDiff = self.simiFunc(leftEnVec - rightEnVec)
+            biasDiff = torch.reshape(leftEnBias - rightEnBias, (-1,))
+            # -1 means the shape is inferred
             rawScore = vecDiff - biasDiff
             return rawScore * (rawScore > 0)
-        # hypernym
-        elif relIndex.item() in self.hypernym_set:
+        elif group == 1:
+            # hypernym
             # A <-> B; B is a hypernym of A, B is more general than A
             # (|v1-v2|L2 - (a2-a1))+
-            vecDiff = L2Norm(leftVec - rightVec)
-            biasDiff = rightBias - leftBias
+            vecDiff = self.simiFunc(leftEnVec - rightEnVec)
+            biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
             rawScore = vecDiff - biasDiff
             return rawScore * (rawScore > 0)
-        # synonym
-        elif relIndex.item() in self.synonym_set:
+        elif group == 2:
+            # synonym
             # |v1-v2|L1 + |a1-a2|
-            vecDiff = L2Norm(leftVec - rightVec)
-            biasDiff = torch.abs(leftBias-rightBias)
+            vecDiff = self.simiFunc(leftEnVec - rightEnVec)
+            biasDiff = torch.abs(torch.reshape(leftEnBias - rightEnBias, (-1,)))
             return vecDiff + biasDiff
-        # translation
         else:
+            # translation
             # |v1+d-v2|L2
-            relEmbedding = self.relationEmbedding(relIndex)
-            return L2Norm(leftVec+relEmbedding-rightVec)
+            relEmbedding = self.relationEmbedding(relIndices)
+            return self.simiFunc(leftEnVec + relEmbedding - rightEnVec)
 
     def margincost(self, pos, neg, margin):
         out = pos - neg + margin
         # pos is supposed to be smaller, so we use pos - neg
+        # print("pos scores are %s" % pos)
+        # print("neg scores are %s" % neg)
+        # print("costs are %s" % out)
         return out * (out > 0)
 
     def rankScore(self, idxLeft, idxRel, idxRight):
@@ -188,65 +202,60 @@ class NewModel(nn.Module):
             # calculate rank of left
             # we need to calculate the similarity score of all 'left' entities given rel and right
 
-            # both leftSimiScores and rightSimiScores are numpy arrays
-
-            # TODO: this bit might be time consuming, we might want to reimplement crt score function so it can do the
-            # TODO: calculation altogether instead of looping through every single value
-
             leftCrtScores = self.getLeftCrtScores(rel, right)
 
             # TODO: we probably want to check if there are many zeros here; bc zero is the perfect score
+            # print("Across all left entities, number of 0 is %s" % (leftCrtScores == 0).sum())
+            # this might indeed be a problem
+            # after 10 epochs, out of 40943 entities, there are 1642 0s
+            # after 20 epochs, out of 40943 entities, there are 39/25 0s
+            # after 30 epochs, out of 40943 entities, there are 72/57 0s
+            # after 50 epochs, out of 40943 entities, there are 45 0s
 
             # get ranking of idx from highest to lowest first (most correct to least correct)
             # for this list, items are idx and index is ranking
             # we then want to get the position of a particular index
-            # can achieve this by argsort the list again to obtain a list of rankings, sorted in ascending index
-            # however, we are using a simpler and faster for loop here
+            # use the where operation in numpy
 
-            leftIdxRank = np.argsort(leftCrtScores)
-            leftRank = 0
-            for num, idx in enumerate(leftIdxRank):
-                if idx == left:
-                    leftRank = num
-                    break
-            leftRankList.append(leftRank+1)
+            leftIdxRank = torch.argsort(leftCrtScores)
+            # here we try to find out the rank of our left predicate
+            leftRank = np.where(leftIdxRank == left)[0]
+            leftRankList.extend(leftRank+1)
 
-            # calculate rank of right
+            # similarly, calculate rank of right
             rightCrtScores = self.getRightCrtScores(left, rel)
-            rightIdxRank = np.argsort(rightCrtScores)
-            rightRank = 0
-            for num, idx in enumerate(rightIdxRank):
-                if idx == right:
-                    rightRank = num
-                    break
-            rightRankList.append(rightRank+1)
+            # print("Across all right entities, number of 0 is %s" % (rightCrtScores == 0).sum())
+            rightIdxRank = torch.argsort(rightCrtScores)
+            rightRank = np.where(rightIdxRank == right)[0]
+            rightRankList.extend(rightRank+1)
 
         return [leftRankList, rightRankList]
 
     def getLeftCrtScores(self, rel, right):
 
-        # we need to return a numpy array of correctness scores over all possible left entities
-        # numpy array because we want to use np.sort() later to obtain ranking
+        # we need to return a list of correctness scores over all possible left entities, in the form of Tensor
+        # this operation is fast, because rel is fixed, and we can do batch calculation
 
         # we use LongTensor to store the indices
-        # need to use
+        # leftEnVec and leftEnBias include all possible cases
         leftEnVec = self.predVec(torch.LongTensor([*range(self.numEntity)]))
         leftEnBias = self.predBias(torch.LongTensor([*range(self.numEntity)]))
         relationIndex = torch.LongTensor([rel])
         rightEnVec = self.predVec(torch.LongTensor([right]))
         rightEnBias = self.predBias(torch.LongTensor([right]))
-        return np.asarray([self.crtScore(leftEnVec[i], leftEnBias[i], relationIndex, rightEnVec, rightEnBias)
-                           for i in range(self.numEntity)])
+        group = self.relGroup(rel)
+
+        return self.crtFunc(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group)
 
     def getRightCrtScores(self, left, rel):
 
-        # return a numpy array of correctness scores over all possible right entities
+        # return a list of correctness scores over all possible right entities, in the form of Tensor
 
         rightEnVec = self.predVec(torch.LongTensor([*range(self.numEntity)]))
         rightEnBias = self.predBias(torch.LongTensor([*range(self.numEntity)]))
         relationIndex = torch.LongTensor([rel])
         leftEnVec = self.predVec(torch.LongTensor([left]))
         leftEnBias = self.predBias(torch.LongTensor([left]))
+        group = self.relGroup(rel)
 
-        return np.asarray([self.crtScore(leftEnVec, leftEnBias, relationIndex, rightEnVec[i], rightEnBias[i])
-                           for i in range(self.numEntity)])
+        return self.crtFunc(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group)

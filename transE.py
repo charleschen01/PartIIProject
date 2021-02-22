@@ -33,7 +33,7 @@ def DotSimilarity(leftEnEmbeddings, relEmbeddings, rightEnEmbeddings):
 
 class TransE(nn.Module):
 
-    def __init__(self, numEntity, numRelation, simi, margin, dimension=20):
+    def __init__(self, numEntity, numRelation, simi, margin, dimension):
         super(TransE, self).__init__()
 
         self.numEntity = numEntity
