@@ -21,6 +21,7 @@ def read_triplets(path):
     return triplet_set
 
 
+# load datasets from the original txt files
 training_set = read_triplets("./wordnet/wordnet-mlj12-train.txt")
 test_set = read_triplets("./wordnet/wordnet-mlj12-test.txt")
 validation_set = read_triplets("./wordnet/wordnet-mlj12-valid.txt")

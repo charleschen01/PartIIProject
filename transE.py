@@ -109,66 +109,25 @@ class TransE(nn.Module):
         # pos is more similar and supposed to be smaller, so we use pos - neg
         return out * (out > 0)
 
-    def rankScore(self, idxLeft, idxRel, idxRight):
+    # the two functions below are for evaluation
 
-        # calculate predicted ranks for a particular state of embeddings
+    def getLeftCrtScores(self, rel, right):
 
-        # inputs: idxLeft, idxRight and idxRel are all lists of indices
-        # outputs: a list [llist,rlist]; llist and rlist contain ranks of left entity and right entity respectively
+        # we need to return a list of similarity scores over all the corrupted left entities
 
-        leftRankList = []
-        rightRankList = []
-
-        for left, rel, right in zip(idxLeft, idxRel, idxRight):
-            # calculate rank of left
-            # we need to calculate the similarity score of all 'left' entities given rel and right
-
-            # both leftSimiScores and rightSimiScores are numpy arrays
-
-            leftSimiScores = self.getLeftSimiScores(rel, right)
-
-            # get ranking of idx from highest to lowest first
-            # for this list, items are idx and index is ranking
-            # we then want to get the position of a particular index
-            # can achieve this by argsort the list again to obtain a list of rankings, sorted in ascending index
-
-            leftIdxRank = np.argsort(leftSimiScores)
-            leftRank = 0
-            for num, idx in enumerate(leftIdxRank):
-                if idx == left:
-                    leftRank = num
-                    break
-            leftRankList.append(leftRank+1)
-
-            # calculate rank of right
-            rightSimiScores = self.getRightSimiScores(left, rel)
-            rightIdxRank = np.argsort(rightSimiScores)
-            rightRank = 0
-            for num, idx in enumerate(rightIdxRank):
-                if idx == right:
-                    rightRank = num
-                    break
-            rightRankList.append(rightRank+1)
-
-        return [leftRankList, rightRankList]
-
-    def getLeftSimiScores(self, rel, right):
-
-        # we need to return a list of similarity scores over all possible left entities
-
-        leftEnEmbeddings = self.entityEmbedding(torch.LongTensor([i for i in range(self.entityEmbedding.num_embeddings)]))
+        leftEnEmbeddings = self.entityEmbedding(torch.LongTensor([*range(self.numEntity)]))
         relationEmbedding = self.relationEmbedding(torch.LongTensor([rel]))
         rightEnEmbedding = self.entityEmbedding(torch.LongTensor([right]))
-        return self.simifunc(leftEnEmbeddings, relationEmbedding, rightEnEmbedding).detach().numpy()
+        return self.simifunc(leftEnEmbeddings, relationEmbedding, rightEnEmbedding).detach()
 
-    def getRightSimiScores(self, left, rel):
+    def getRightCrtScores(self, left, rel):
 
         # return a list of similarity scores over all possible right entities
 
-        rightEnEmbeddings = self.entityEmbedding(torch.LongTensor([i for i in range(self.entityEmbedding.num_embeddings)]))
         leftEnEmbedding = self.entityEmbedding(torch.LongTensor([left]))
         relationEmbedding = self.relationEmbedding(torch.LongTensor([rel]))
-        return self.simifunc(leftEnEmbedding, relationEmbedding, rightEnEmbeddings).detach().numpy()
+        rightEnEmbeddings = self.entityEmbedding(torch.LongTensor([*range(self.numEntity)]))
+        return self.simifunc(leftEnEmbedding, relationEmbedding, rightEnEmbeddings).detach()
 
 
 
