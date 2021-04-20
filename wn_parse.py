@@ -14,15 +14,15 @@ relationlist = []
 for datatype in ['train', 'valid', 'test']:
     # TODO: configure here
     # f = open("./wn18_subset/wn18_%s_subset.txt" % datatype, 'r')
-    f = open("./wn18/wordnet-mlj12-%s.txt" % datatype, 'r')
-    # f = open("./wn18rr/wn18rr_%s.txt" % datatype, 'r')
+    # f = open("./wn18/wordnet-mlj12-%s.txt" % datatype, 'r')
+    f = open("./wn18rr/wn18rr_%s.txt" % datatype, 'r')
     data = f.readlines()
     f.close()
 
     # obtain a set of entities and relations
     for triplet in data:
         lhs, rel, rhs = triplet[:-1].split('\t')
-        entitylist += [lhs, rhs]
+        entitylist += [int(lhs), int(rhs)]
         relationlist += [rel]
 
 entityset = np.sort(list(set(entitylist)))
@@ -34,7 +34,7 @@ print(relset)
 
 # we now fill in the dictionaries mapping entity and relation to id
 
-entity2id = {}
+entity2id = {}   # here, entity is the number used in the original dataset
 id2entity = {}
 relation2id = {}
 id2relation = {}
@@ -56,14 +56,14 @@ for i in relset:
 # f2 = open('./data/wn18_subset_id2entity', 'wb')
 # f3 = open('./data/wn18_subset_relation2id', 'wb')
 # f4 = open('./data/wn18_subset_id2relation', 'wb')
-f1 = open('./data/wn18_entity2id', 'wb')
-f2 = open('./data/wn18_id2entity', 'wb')
-f3 = open('./data/wn18_relation2id', 'wb')
-f4 = open('./data/wn18_id2relation', 'wb')
-# f1 = open('./data/wn18rr_entity2id', 'wb')
-# f2 = open('./data/wn18rr_id2entity', 'wb')
-# f3 = open('./data/wn18rr_relation2id', 'wb')
-# f4 = open('./data/wn18rr_id2relation', 'wb')
+# f1 = open('./data/wn18_entity2id', 'wb')
+# f2 = open('./data/wn18_id2entity', 'wb')
+# f3 = open('./data/wn18_relation2id', 'wb')
+# f4 = open('./data/wn18_id2relation', 'wb')
+f1 = open('./data/wn18rr_entity2id', 'wb')
+f2 = open('./data/wn18rr_id2entity', 'wb')
+f3 = open('./data/wn18rr_relation2id', 'wb')
+f4 = open('./data/wn18rr_id2relation', 'wb')
 pickle.dump(entity2id, f1)
 pickle.dump(id2entity, f2)
 pickle.dump(relation2id, f3)
@@ -127,6 +127,25 @@ pickle.dump(leftRel2Right, m)
 pickle.dump(relRight2Left, n)
 m.close()
 n.close()
+
+
+# obtain a dictionary mapping from entity index to the actual word
+# e.g. 14854262 --> "__stool_NN_2"
+
+f = open("./wn18/wordnet-mlj12-definitions.txt", 'r')
+data = f.readlines()
+f.close()
+
+idx2word = {}
+for line in data:
+    idx, word, definition = line[:-1].split('\t')
+    idx2word[int(idx)] = word
+
+print("Number of words is %s" % len(idx2word))
+
+f = open('./data/entity2word', 'wb')
+pickle.dump(idx2word, f)
+f.close()
 
 
 

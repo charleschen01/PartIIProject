@@ -1,6 +1,4 @@
 import torch
-import numpy as np
-import math
 
 # for nn
 import torch.nn as nn
@@ -17,13 +15,14 @@ def L1Norm(embedding):
 
 class NewModel(nn.Module):
 
-    def __init__(self, numEntity, numRelation, margin, simi, dimension, dataset):
+    def __init__(self, numEntity, numRelation, margin, simi, dimension, dataset, GPU):
         super(NewModel, self).__init__()
 
         self.numEntity = numEntity
         self.numRelation = numRelation
         self.dimension = dimension
         self.margin = margin
+        self.GPU = GPU
 
         if simi == "L1":
             self.simiFunc = L1Norm
@@ -40,8 +39,6 @@ class NewModel(nn.Module):
         self.predBias = nn.Embedding(self.numEntity, 1)
         # we create embeddings for all relations, but will only be using the ones corresponding to translation
         self.relationEmbedding = nn.Embedding(self.numRelation, self.dimension)
-
-        # Relation Grouping: this will be useful for our new model
 
         # WN18:
         # {'_also_see': 0,
@@ -84,11 +81,18 @@ class NewModel(nn.Module):
         # we initialise the vector, bias and relation embedding; normalise vector and relation embedding
         k_root = dimension**0.5
         self.predVec.weight.data = torch.FloatTensor(self.numEntity, self.dimension).uniform_(-6.0/k_root, 6.0/k_root)
-        self.predVec.weight.data = F.normalize(self.predVec.weight.data)  # default dimension to normalise is 1
-        self.predBias.weight.data = torch.FloatTensor(self.numEntity, 1).uniform_(-6.0/k_root, 6.0/k_root)
+
+        # try not to normalise the weight vector
+        # self.predVec.weight.data = F.normalize(self.predVec.weight.data)  # default dimension to normalise is 1
+
+        # we try initialising all bias to 0 because that makes more sense
+        # self.predBias.weight.data = torch.FloatTensor(self.numEntity, 1).uniform_(-6.0/k_root, 6.0/k_root)
+        self.predBias.weight.data = torch.zeros(self.numEntity, 1)
         # for bias, we don't normalise it because it's just one value
         self.relationEmbedding.weight.data = torch.FloatTensor(self.numRelation, self.dimension).uniform_(-6.0/k_root, 6.0/k_root)
-        self.relationEmbedding.weight.data = F.normalize(self.relationEmbedding.weight.data)
+
+        # try not to normalise the relation vector
+        # self.relationEmbedding.weight.data = F.normalize(self.relationEmbedding.weight.data)
 
         # second layer: compute cost
 
@@ -115,6 +119,14 @@ class NewModel(nn.Module):
         # these indices are in the form of long tensor
         # group is an integer, denoting the relation group this batch belongs
         leftEnIndices, rightEnIndices, relIndices, negLeftEnIndices, negRightEnIndices, group = x
+
+        if self.GPU:
+            # use GPU
+            leftEnIndices = leftEnIndices.to(torch.device('cuda:0'))
+            rightEnIndices = rightEnIndices.to(torch.device('cuda:0'))
+            relIndices = relIndices.to(torch.device('cuda:0'))
+            negLeftEnIndices = negLeftEnIndices.to(torch.device('cuda:0'))
+            negRightEnIndices = negRightEnIndices.to(torch.device('cuda:0'))
 
         # here we guarantee that the batch of extended triplets all belong to the same relation
 
@@ -147,36 +159,39 @@ class NewModel(nn.Module):
         cost = costl + costr
 
         # DEBUG: to find nan value in predicate embeddings
-        for i, x in enumerate(cost):
-            if math.isnan(x):
-                print("Found nan in %s" % i)
-                # figure out what happens at i
-                print("triplet crt score: %s" % crt[i])
-                print("left neg crt score: %s" % crtln[i])
-                print("right neg crt score: %s" % crtrn[i])
-                print("left entity index: %s" % leftEnIndices[i])
-                print("left entity vec: %s" % leftEnVec[i])
-                print("left entity bias: %s" % leftEnBias[i])
-                print("relation index: %s" % relIndices[i])
-                print("right entity index: %s" % rightEnIndices[i])
-                print("right entity vec: %s" % rightEnVec[i])
-                print("right entity bias: %s" % rightEnBias[i])
-                print("neg left entity vec: %s" % negLeftEnVec[i])
-                print("neg left entity bias: %s" % negLeftEnBias[i])
-                print("neg right entity vec: %s" % negRightEnVec[i])
-                print("neg right entity bias: %s" % negRightEnBias[i])
-
-                # check if there's any problem with bias
-                all_indices = torch.LongTensor([i for i in range(self.numEntity)])
-                print(torch.sum(self.predBias(all_indices)))
-                exit()
+        # for i, x in enumerate(cost):
+        #     if math.isnan(x):
+        #         print("Found nan in %s" % i)
+        #         # figure out what happens at i
+        #         print("triplet crt score: %s" % crt[i])
+        #         print("left neg crt score: %s" % crtln[i])
+        #         print("right neg crt score: %s" % crtrn[i])
+        #         print("left entity index: %s" % leftEnIndices[i])
+        #         print("left entity vec: %s" % leftEnVec[i])
+        #         print("left entity bias: %s" % leftEnBias[i])
+        #         print("relation index: %s" % relIndices[i])
+        #         print("right entity index: %s" % rightEnIndices[i])
+        #         print("right entity vec: %s" % rightEnVec[i])
+        #         print("right entity bias: %s" % rightEnBias[i])
+        #         print("neg left entity vec: %s" % negLeftEnVec[i])
+        #         print("neg left entity bias: %s" % negLeftEnBias[i])
+        #         print("neg right entity vec: %s" % negRightEnVec[i])
+        #         print("neg right entity bias: %s" % negRightEnBias[i])
+        #
+        #         # check if there's any problem with bias
+        #         all_indices = torch.LongTensor([i for i in range(self.numEntity)])
+        #         print(torch.sum(self.predBias(all_indices)))
+        #         exit()
 
 
         # size of cost is the size of the list of entities/relations
-
-        return torch.mean(cost)
+        mean_cost = torch.mean(cost)
+        if self.GPU:
+            mean_cost = mean_cost.to(torch.device('cpu'))
+        return mean_cost
         # we take average so the final output is only one value
 
+    # this is the key part of our model
     def crtFunc(self, leftEnVec, leftEnBias, relIndices, rightEnVec, rightEnBias, group):
         # the first five inputs are list of embeddings in the form of Tensor
         # output: a list of correctness scores, in the form of Tensor
@@ -185,38 +200,38 @@ class NewModel(nn.Module):
             # hyponym
             # A <-> B; B is a hyponym of A, A is more general than B
             # (|v1-v2|L2 - (a1-a2))+
-            # vecDiff = self.simiFunc(leftEnVec - rightEnVec)
-            # biasDiff = torch.reshape(leftEnBias - rightEnBias, (-1,))
+            vecDiff = self.simiFunc(leftEnVec - rightEnVec)
+            biasDiff = torch.reshape(leftEnBias - rightEnBias, (-1,))
             # -1 means the shape is inferred
-            # rawScore = vecDiff - biasDiff
-            # return rawScore * (rawScore > 0)
+            rawScore = vecDiff - biasDiff
+            return rawScore * (rawScore > 0)
 
             # trying a new method
             # s is sum of all (v1-v2) negative terms
             # ((a2-a1)-s)+
-            diff = leftEnVec - rightEnVec
-            negArr = torch.clamp(diff,max=0)
-            biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
-            rawScore = biasDiff - torch.sum(negArr,dim=1)
-            return rawScore * (rawScore > 0)
+            # diff = leftEnVec - rightEnVec
+            # negArr = torch.clamp(diff,max=0)
+            # biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
+            # rawScore = biasDiff - torch.sum(negArr,dim=1)
+            # return rawScore * (rawScore > 0)
 
         elif group == 1:
             # hypernym
             # A <-> B; B is a hypernym of A, B is more general than A
             # (|v1-v2|L2 - (a2-a1))+
-            # vecDiff = self.simiFunc(leftEnVec - rightEnVec)
-            # biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
-            # rawScore = vecDiff - biasDiff
-            # return rawScore * (rawScore > 0)
+            vecDiff = self.simiFunc(leftEnVec - rightEnVec)
+            biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
+            rawScore = vecDiff - biasDiff
+            return rawScore * (rawScore > 0)
 
             # trying a new method
-            # s is sum of all (v2-v1) negative terms
-            # ((a1-a2)-s)+
-            diff = rightEnVec - leftEnVec
-            negArr = torch.clamp(diff,max=0)
-            biasDiff = torch.reshape(leftEnBias - rightEnBias, (-1,))
-            rawScore = biasDiff - torch.sum(negArr, dim=1)
-            return rawScore * (rawScore > 0)
+            # calculate sum of all (v1-v2) positive terms
+            # ((diff-(a2-a1))+
+            # diff = leftEnVec - rightEnVec
+            # posArr = torch.clamp(diff,min=0)
+            # biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
+            # rawScore = torch.sum(posArr, dim=1) - biasDiff
+            # return rawScore * (rawScore > 0)
 
         elif group == 2:
             # synonym
@@ -224,6 +239,7 @@ class NewModel(nn.Module):
             vecDiff = self.simiFunc(leftEnVec - rightEnVec)
             biasDiff = torch.abs(torch.reshape(leftEnBias - rightEnBias, (-1,)))
             return vecDiff + biasDiff
+
         else:
             # translation
             # |v1+d-v2|L2
@@ -238,19 +254,30 @@ class NewModel(nn.Module):
         # print("costs are %s" % out)
         return out * (out > 0)
 
+    # the two functions below are used for evaluation
     def getLeftCrtScores(self, rel, right):
 
         # we need to return a list of correctness scores over all possible left entities, in the form of Tensor
         # this operation is fast, because rel is fixed, and we can do batch calculation
 
+        leftIndices = torch.LongTensor([*range(self.numEntity)])
+        relationIndex = torch.LongTensor([rel])
+        rightIndices = torch.LongTensor([right])
+
+        if self.GPU:
+            leftIndices = leftIndices.to(torch.device('cuda:0'))
+            relationIndex = relationIndex.to(torch.device('cuda:0'))
+            rightIndices = rightIndices.to(torch.device('cuda:0'))
+
         # we use LongTensor to store the indices
         # we are still calculating scores for all entities
         # but for corrupted entities, we will assign their scores to be inf later
-        leftEnVec = self.predVec(torch.LongTensor([*range(self.numEntity)]))
-        leftEnBias = self.predBias(torch.LongTensor([*range(self.numEntity)]))
-        relationIndex = torch.LongTensor([rel])
-        rightEnVec = self.predVec(torch.LongTensor([right]))
-        rightEnBias = self.predBias(torch.LongTensor([right]))
+        leftEnVec = self.predVec(leftIndices)
+        leftEnBias = self.predBias(leftIndices)
+        relationIndex = relationIndex
+        rightEnVec = self.predVec(rightIndices)
+        rightEnBias = self.predBias(rightIndices)
+
         group = self.relGroup(rel)
 
         return self.crtFunc(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group).detach()
@@ -259,11 +286,21 @@ class NewModel(nn.Module):
 
         # return a list of correctness scores over all possible right entities, in the form of Tensor
 
-        leftEnVec = self.predVec(torch.LongTensor([left]))
-        leftEnBias = self.predBias(torch.LongTensor([left]))
+        leftIndices = torch.LongTensor([left])
         relationIndex = torch.LongTensor([rel])
-        rightEnVec = self.predVec(torch.LongTensor([*range(self.numEntity)]))
-        rightEnBias = self.predBias(torch.LongTensor([*range(self.numEntity)]))
+        rightIndices = torch.LongTensor([*range(self.numEntity)])
+
+        if self.GPU:
+            leftIndices = leftIndices.to(torch.device('cuda:0'))
+            relationIndex = relationIndex.to(torch.device('cuda:0'))
+            rightIndices = rightIndices.to(torch.device('cuda:0'))
+
+        leftEnVec = self.predVec(leftIndices)
+        leftEnBias = self.predBias(leftIndices)
+        relationIndex = relationIndex
+        rightEnVec = self.predVec(rightIndices)
+        rightEnBias = self.predBias(rightIndices)
+
         group = self.relGroup(rel)
 
         return self.crtFunc(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group).detach()

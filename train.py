@@ -1,10 +1,11 @@
-# similar to WN_parse.py
-# convert triplets to sparse matrices which can serve as inputs to the neural network
 import scipy.sparse
 import pickle
 import numpy as np
 from transE import TransE
+from DistMult import DistMult
 from NewModel import NewModel
+
+from extract_hypernym import extractHypernym
 
 # optimiser
 import torch
@@ -35,20 +36,22 @@ def convert2idx(spmat):
 
 class train:
 
-    def __init__(self, dataset):
+    def __init__(self, dataset, num_epochs=50, num_batches=10, GPU=False, HypernymOnly=False):
 
         # load the 4 dictionaries for entities and relations
         # and another 2 dictionary for generating corrupted triplets
 
         # TODO: always configure this before training
+        # specify whether it's wn18 or wn18rr
         self.dataset = dataset
 
-        # full dataset
+        # load in the entity and relation datasets
         self.entity2id = pickle.load(open("./data/%s_entity2id" % self.dataset, 'rb'))
         self.id2entity = pickle.load(open("./data/%s_id2entity" % self.dataset, 'rb'))
         self.id2relation = pickle.load(open("./data/%s_id2relation" % self.dataset, 'rb'))
         self.relation2id = pickle.load(open("./data/%s_relation2id" % self.dataset, 'rb'))
 
+        # load in (left, rel) -> right mapping and (rel, right) -> left mapping
         self.leftRel2Right = pickle.load(open("./data/%s_leftRel2Right" % self.dataset, 'rb'))
         self.relRight2Left = pickle.load(open("./data/%s_relRight2Left" % self.dataset, 'rb'))
 
@@ -58,48 +61,75 @@ class train:
         self.whoami = "unknown"
         # the original figure is 1000, 50 is just for testing purpose
         # TODO: need to adjust it for the actual training
-        self.total_epoch = 50
+        self.total_epoch = num_epochs
         # divide our triplets into 100 batches
-        self.nbatches = 100
+        self.nbatches = num_batches
+        self.GPU = GPU
 
         # we need to obtain indices for left entity, right entity, relation, as well as negative left and right entities
         # which we can then feed into the network
 
+        # load in the sparse csr files
         # the format of datasets below is sparse csr files of size (no. of entities/relations * no. of triplets)
 
-        # use full dataset
-
         trainLeft = load_file("./data/%s_train_lhs" % self.dataset)
-        trainRight = load_file("./data/%s_train_rhs" % self.dataset)
         trainRel = load_file("./data/%s_train_rel" % self.dataset)
+        trainRight = load_file("./data/%s_train_rhs" % self.dataset)
+
 
         # validation set
         validLeft = load_file("./data/%s_valid_lhs" % self.dataset)
-        validRight = load_file("./data/%s_valid_rhs" % self.dataset)
         validRel = load_file("./data/%s_valid_rel" % self.dataset)
+        validRight = load_file("./data/%s_valid_rhs" % self.dataset)
+
 
         # test set
         testLeft = load_file("./data/%s_test_lhs" % self.dataset)
-        testRight = load_file("./data/%s_test_rhs" % self.dataset)
         testRel = load_file("./data/%s_test_rel" % self.dataset)
+        testRight = load_file("./data/%s_test_rhs" % self.dataset)
+
 
         # index conversion
         # these are the indices that we can directly feed into our first layer
         self.trainLeftIndex = convert2idx(trainLeft)
-        self.trainRightIndex = convert2idx(trainRight)
         self.trainRelIndex = convert2idx(trainRel)
+        self.trainRightIndex = convert2idx(trainRight)
         self.validLeftIndex = convert2idx(validLeft)
-        self.validRightIndex = convert2idx(validRight)
         self.validRelIndex = convert2idx(validRel)
+        self.validRightIndex = convert2idx(validRight)
         self.testLeftIndex = convert2idx(testLeft)
-        self.testRightIndex = convert2idx(testRight)
         self.testRelIndex = convert2idx(testRel)
+        self.testRightIndex = convert2idx(testRight)
 
-    def train_transE(self, lr, simi, margin, k):
+
+        # TODO: here we change the indices bc we only want to test on Hypernym relations
+        # we must make sure that in this case, we don't touch on test dataset
+
+        # here, we extract triplets that only have to do with Hypernym relations
+        # again, validation set only contains synsets that appear in training set
+        if HypernymOnly:
+            hypernymCombo = extractHypernym(self.trainLeftIndex, self.trainRelIndex, self.trainRightIndex,
+                            self.validLeftIndex, self.validRelIndex, self.validRightIndex)
+            self.trainLeftIndex = hypernymCombo[0]
+            self.trainRelIndex = hypernymCombo[1]
+            self.trainRightIndex = hypernymCombo[2]
+            self.validLeftIndex = hypernymCombo[3]
+            self.validRelIndex = hypernymCombo[4]
+            self.validRightIndex = hypernymCombo[5]
+
+
+    def trainModel(self, lr, margin, simi, k, model):
 
         # initialise the neural network
-        self.model = TransE(self.numSynset, self.numRelation, simi, margin, k)
-        self.whoami = "TransE"
+        if model == "TransE":
+            self.model = TransE(self.numSynset, self.numRelation, simi, margin, k, self.dataset, self.GPU)
+            self.whoami = "TransE"
+        elif model == "DistMult":
+            self.model = DistMult(self.numSynset, self.numRelation, margin, k, self.dataset, self.GPU)
+            self.whoami = "DistMult"
+        if self.GPU:
+            self.model = self.model.to(torch.device('cuda:0'))
+
 
         # start training process
         inputSize = len(self.trainLeftIndex) # this is the total size
@@ -178,7 +208,9 @@ class train:
         print("Training finishes after %s epoch" % self.total_epoch)
         print("The loss for the last epoch is %s" % finalEpochLoss)
 
-    # migrated rankScore into train class as the evaluation function is the same for different models
+        if self.GPU:
+            self.model = self.model.to(torch.device('cpu'))
+
     def rankScore(self, idxLeft, idxRel, idxRight):
 
         # calculate predicted ranks for a particular state of embeddings
@@ -205,15 +237,20 @@ class train:
 
             # find out the correct entities that we want to ignore and not treat as corrupted
             leftIgnoreList = [entity for entity in self.relRight2Left[(rel, right)] if entity != left]
+
             # if we are using the new model and the relation is similar, we want to add right to the ignoreList
-            # TODO: whether this is the correct approach still needs to be discussed
+            # we don't want to always include a triplet that gives the best score
+            # TODO: for now, we treat everything as translation
             if self.whoami == "newModel" and self.model.relGroup(rel) == 2:
                 leftIgnoreList.append(right)
+
             # generate the scores for all possible left entities first
             leftCrtScores = self.model.getLeftCrtScores(rel, right)
+
             # set scores for ignored entities to be infinite, so that we can ignore them in our ranking
             # in this way we only get sensible scores for corrupted triplets
             leftCrtScores[leftIgnoreList] = float('inf')
+
             # TODO: for the new model we probably want to check if there are many zeros here; bc zero is the perfect score
             # print("Across all left entities, number of 0 is %s" % (leftCrtScores == 0).sum())
             # this might indeed be a problem
@@ -227,6 +264,11 @@ class train:
             # we then want to get the position of a particular index
             # use the where operation in numpy
             leftIdxRank = torch.argsort(leftCrtScores)
+
+            # switch back to CPU once we start dealing with numpy arrays
+            if self.GPU:
+                leftIdxRank = leftIdxRank.to(torch.device('cpu'))
+
             # here we try to find out the rank of our left predicate
             leftRank = np.where(leftIdxRank == left)[0] # leftRank comes out as a list
             leftRankList.extend(leftRank+1)
@@ -234,12 +276,19 @@ class train:
 
             # generate the right corrupted triplets in a similar fashion
             rightIgnoreList = [entity for entity in self.leftRel2Right[(left, rel)] if entity != right]
+            # TODO: when doing testing last time, we treat everythng else as translation
             if self.whoami == "newModel" and self.model.relGroup(rel) == 2:
                 rightIgnoreList.append(left)
             # similarly, calculate rank of right
             rightCrtScores = self.model.getRightCrtScores(left, rel)
+
             rightCrtScores[rightIgnoreList] = float('inf')
             rightIdxRank = torch.argsort(rightCrtScores)
+
+            # switch back to cpu once we start dealing with numpy arrays
+            if self.GPU:
+                rightIdxRank = rightIdxRank.to(torch.device('cpu'))
+
             rightRank = np.where(rightIdxRank == right)[0]
             rightRankList.extend(rightRank+1)
             rightReciRankList.append(1/(rightRank[0]+1))
@@ -249,28 +298,42 @@ class train:
     def evaluate(self, targetSet):
 
         # input:
-        # targetSet is either "validation" or "test"
+        # targetSet is either "validation" or "test" or "training"
         # model evaluation using ranking function after certain epochs
+
+        # move to GPU
+        if self.GPU:
+            self.model = self.model.to(torch.device('cuda:0'))
 
         print("Evaluation on %s set:" % targetSet)
         print("Total number of entities is %s" % self.numSynset)
 
-        # TODO: try evaluate on training set
+        # TODO: add an evaluation for training set
         # rank is in the form [[],[],[],[]]
-        rank = self.rankScore(self.validLeftIndex, self.validRelIndex, self.validRightIndex) if targetSet == "valid" \
-            else self.rankScore(self.trainLeftIndex[0:1000], self.trainRelIndex[0:1000], self.trainRightIndex[0:1000])
+        rank = []
+        relations = []
+        if targetSet == "valid":
+            rank = self.rankScore(self.validLeftIndex, self.validRelIndex, self.validRightIndex)
+            relations = self.validRelIndex # relations used to classify different relations
+        elif targetSet == "test":
+            rank = self.rankScore(self.testLeftIndex, self.testRelIndex, self.testRightIndex)
+            relations = self.testRelIndex
+        elif targetSet == "train":
+            # take the first 2000 triplets of training set
+            # can increase this number after we can run our code on GPU
+            rank = self.rankScore(self.trainLeftIndex[0:2000], self.trainRelIndex[0:2000], self.trainRightIndex[0:2000])
+            relations = self.trainRelIndex[0:2000]
 
-        # TODO: classify evaluation metrics according to relations
-        if self.whoami == "newModel":
-            # we know the validRelIndex
-            groupArray = np.array([self.model.relGroup(rel) for rel in (self.validRelIndex if targetSet == "valid"
-                                                                        else self.trainRelIndex[0:1000])])
-            for relGroup in range(4):
-                indices = np.where(groupArray == relGroup)[0]
-                rankArray = np.concatenate((np.asarray(rank[0])[indices],np.asarray(rank[2])[indices]))
-                reciRankArray = np.concatenate((np.asarray(rank[1])[indices],np.asarray(rank[3])[indices]))
-                print("Results for relation %s:" % relGroup)
-                self.displayEvaluationResults(rankArray,reciRankArray)
+        # include an additional evaluation metrics for different relations
+        # here we analyse individual relation categories
+
+        groupArray = np.array([self.model.relGroup(rel) for rel in relations])
+        for relGroup in range(4):
+            indices = np.where(groupArray == relGroup)[0]
+            rankArray = np.concatenate((np.asarray(rank[0])[indices],np.asarray(rank[2])[indices]))
+            reciRankArray = np.concatenate((np.asarray(rank[1])[indices],np.asarray(rank[3])[indices]))
+            print("Results for relation %s:" % relGroup)
+            self.displayEvaluationResults(rankArray,reciRankArray)
 
         # the overall dataset
         rankArray = np.asarray(rank[0] + rank[2])
@@ -278,10 +341,16 @@ class train:
         print("Overall results:")
         self.displayEvaluationResults(rankArray,reciRankArray)
 
+        # switch back to CPU
+        if self.GPU:
+            self.model = self.model.to(torch.device('cpu'))
+
     def displayEvaluationResults(self, rankArray, reciRankArray):
 
         total = rankArray.size
-        # check if rankArray is empty; this will happen for hyponym when we use WN18RR dataset
+        print("Total number of ranks is %s" % total)
+        # check if rankArray is empty
+        # this will happen for the hyponym case when we use WN18RR dataset
         if total == 0:
             return
         meanRank = np.mean(rankArray)
@@ -300,7 +369,9 @@ class train:
 
         # initialise the neural network
         # newModel
-        self.model = NewModel(self.numSynset, self.numRelation, margin, simi, k, self.dataset)
+        self.model = NewModel(self.numSynset, self.numRelation, margin, simi, k, self.dataset, self.GPU)
+        if self.GPU:
+            self.model = self.model.to(torch.device('cuda:0'))
         self.whoami = "newModel"
 
         # if we are using new model, we want to group triplets according to relation category here
@@ -308,6 +379,7 @@ class train:
         # assign the triplets into groups according to the relation type to speed up the training
         # we have four different groups
         # each is a list of index numpy array for that particular relation
+        # [[...],[...],[...],[...]]
         trainLeftIndexGrouped = [None for _ in range(4)]
         trainRightIndexGrouped = [None for _ in range(4)]
         trainRelIndexGrouped = [None for _ in range(4)]
@@ -315,11 +387,12 @@ class train:
         trainNegRightIndexGrouped = [None for _ in range(4)]
 
         # create an array showing relation group number for each specific triplet
-        groupArray = np.array([self.model.relGroup(i) for i in self.trainRelIndex])
+        groupAllocation = np.array([self.model.relGroup(i) for i in self.trainRelIndex])
         for group in range(4):
-            indicesForThisGroup = np.where(groupArray == group)[0]
+            indicesForThisGroup = np.where(groupAllocation == group)[0]
             trainLeftIndexGrouped[group] = self.trainLeftIndex[indicesForThisGroup]
             trainRightIndexGrouped[group] = self.trainRightIndex[indicesForThisGroup]
+            # TODO: we might want to treat everything else as translation, for testing purpose
             if group == 3:
                 # we only need relation embedding in the translation case
                 # when group is 0, 1 and 2, rel index array will be None
@@ -333,7 +406,7 @@ class train:
 
         optimizer = optim.Adam(self.model.parameters(), lr)
 
-        print("Start training...")
+        print("Start training on {}".format(self.whoami))
         print("Parameters: Learning rate: {0}, Margin: {1}, Similarity function: {2}, Dimension: {3}".format(lr, margin, simi, k))
 
         finalEpochLoss = 0
@@ -344,7 +417,11 @@ class train:
 
             # randomise the inputs and generate negative predicates
             for group in range(4):
+                # if group contains no relation, size is 0, we skip
                 size = len(trainLeftIndexGrouped[group])
+                if size == 0:
+                    continue
+
                 # create a random order
                 order = np.random.permutation(size)
                 trainLeftIndexGrouped[group] = trainLeftIndexGrouped[group][order]
@@ -355,7 +432,9 @@ class train:
                 # generate negative predicates
                 trainNegLeftIndexGrouped[group] = np.random.choice(self.numSynset, size, replace=True)
                 trainNegRightIndexGrouped[group] = np.random.choice(self.numSynset, size, replace=True)
+
                 # eliminate repetition of synset
+                # having the same entity on both sides will throw us errors during training
                 for bad_index in np.where(trainLeftIndexGrouped[group] - trainNegRightIndexGrouped[group] == 0)[0]:
                     while trainNegRightIndexGrouped[group][bad_index] == trainLeftIndexGrouped[group][bad_index]:
                         # keep choosing random values until not the same
@@ -366,10 +445,9 @@ class train:
                         # keep choosing random values until not the same
                         trainNegLeftIndexGrouped[group][bad_index] = np.random.choice(self.numSynset)
 
-
             # we loop over the four groups to do training separately
             batchCount = 0
-            # TODO: we mix and match different groups, the question is how shall we do it
+            # we mix and match different groups
             # put all the groups into a list then permutate
 
             # create a list of tensor tuples (left, right, rel, negLeft, negRight)
@@ -377,9 +455,6 @@ class train:
 
             # create batches and put them into our group
             for group in range(4):
-                # TODO: here we are only performing training on hypernym
-                # if group != 1:
-                #     continue
                 size = len(trainLeftIndexGrouped[group])
                 for i in range(math.ceil(size/batchSize)):
                     start = i * batchSize
@@ -388,6 +463,8 @@ class train:
                     # we use LongTensor because our embeddings expect LongTensor inputs
                     batchLeftIndex = torch.LongTensor(trainLeftIndexGrouped[group][start:end])
                     batchRightIndex = torch.LongTensor(trainRightIndexGrouped[group][start:end])
+                    # we only generate rel embeddings when group is 3
+                    # TODO: might treat everything else as translation
                     batchRelIndex = torch.LongTensor(trainRelIndexGrouped[group][start:end] if group == 3 else [])
                     batchNegLeftIndex = torch.LongTensor(trainNegLeftIndexGrouped[group][start:end])
                     batchNegRightIndex = torch.LongTensor(trainNegRightIndexGrouped[group][start:end])
@@ -396,27 +473,30 @@ class train:
 
                     # without mismatching of batches
 
-                    self.model.zero_grad()
-                    loss = self.model(x)  # dynamically creating the computation graph
-                    loss.backward()
-                    optimizer.step()
+                    # self.model.zero_grad()
+                    # loss = self.model(x)  # dynamically creating the computation graph
+                    # loss.backward()
+                    # optimizer.step()
+                    #
+                    # batchCount += 1
+                    # epochLoss += loss.item()
 
-                    batchCount += 1
-                    epochLoss += loss.item()
-
-            # with mismatching of batches
+            # we mismatch batches
 
             # generate a randomly permutated batchList
-            # shuffle(batchList)
-            # # loop through the batch list to perform training
-            # for x in batchList:
-            #     self.model.zero_grad()
-            #     loss = self.model(x)  # dynamically creating the computation graph
-            #     loss.backward()
-            #     optimizer.step()
-            #
-            #     batchCount += 1
-            #     epochLoss += loss.item()
+            shuffle(batchList)
+            # loop through the batch list to perform training
+            for x in batchList:
+                self.model.zero_grad()
+                loss = self.model(x)  # dynamically creating the computation graph
+                loss.backward()
+                optimizer.step()
+
+                # we clamp bias so that they are within [-0.1,0.1]
+                self.model.predBias.weight.data = torch.clamp(self.model.predBias.weight.data,-0.1,0.1)
+
+                batchCount += 1
+                epochLoss += loss.item()
 
             #     # DEBUG: check predicates to see if there's any nan value
             #     all_indices = torch.LongTensor([i for i in range(newModel.numEntity)])
@@ -483,14 +563,16 @@ class train:
 
             # print out every epoch to make sure our model is working correctly
             # print("Batch count is %s" % batchCount)
-            print("Finished epoch %s" % (epoch_count))
-            print("Loss is %s" % epochLoss)
+            # print("Finished epoch %s" % (epoch_count))
+            # print("Loss is %s" % epochLoss)
 
             # TODO: shall we do the normalisation? there are different choices
+            # we might want to normalise relations as well?
             # NewModel
             # we only normalise the predicate for now
-            self.model.predVec.weight.data = F.normalize(self.model.predVec.weight.data).detach()
-            # newModel.relationEmbedding.weight.data = F.normalize(newModel.predVec.weight.data).detach()
+
+            # we try not to normalise the weight, because it doesn't fit our framework that well
+            # self.model.predVec.weight.data = F.normalize(self.model.predVec.weight.data).detach()
             finalEpochLoss = epochLoss
 
 
@@ -498,6 +580,9 @@ class train:
 
         print("Training finishes after %s epoch" % self.total_epoch)
         print("The loss for the last epoch is %s" % finalEpochLoss)
+
+        if self.GPU:
+            self.model = self.model.to(torch.device('cpu'))
 
 
 # testing
@@ -509,49 +594,57 @@ class train:
 
 # we probably want to save the model obtained in each case
 
-# testing:
+def main():
+    learning_rates = [0.01]
+    margins = [1]
 
-# new model
-trainingInstance = train("wn18rr")
-trainingInstance.train_newModel(0.001, 2, "L1", 50)
-trainingInstance.evaluate("valid")
+    trainingInstance = train("wn18", num_epochs=50, num_batches=10)
+    for lr in learning_rates:
+        for margin in margins:
+            trainingInstance.trainModel(lr, margin, "L2", 20, "DistMult")
+            trainingInstance.evaluate("valid")
 
-# transE
-# trainingInstance.train_transE(0.01, "L2", 1, 20)
-# trainingInstance.evaluate("valid")
+    # transE
+    # trainingInstance.train_transE(0.01, "L2", 1, 20)
+    # trainingInstance.evaluate("valid")
 
-# dimensions = [20, 50]
-# simi_functions = ["L1", "L2", "Dot"]
-# learning_rates = [0.001, 0.01, 0.1]
-# margins = [1, 2]
-#
-# results = {}
-#
-# startTime = time.localtime()
-#
-# # load dataset once at the start
-# trainingInstance = train()
-#
-# for k in dimensions:
-#     for simi in simi_functions:
-#         for lr in learning_rates:
-#             for margin in margins:
-#
-#                 # training
-#                 # each time we define a new model field within train class object
-#                 trainingInstance.train_transE(lr, simi, margin, k)
-#                 trainingInstance.evaluate("valid")
-#
-#                 print("Let's rest for 15 seconds")
-#                 print()
-#                 time.sleep(15)
-#
-# print(results)
-#
-# endTime = time.localtime()
-#
-# duration = (time.mktime(endTime) - time.mktime(startTime))/60
-# print("Total duration is %s minutes" % duration)
+    # dimensions = [20, 50]
+    # simi_functions = ["L1", "L2", "Dot"]
+
+    #
+    # results = {}
+    #
+    # startTime = time.localtime()
+    #
+    # # load dataset once at the start
+    # trainingInstance = train()
+    #
+    # for k in dimensions:
+    #     for simi in simi_functions:
+    #         for lr in learning_rates:
+    #             for margin in margins:
+    #
+    #                 # training
+    #                 # each time we define a new model field within train class object
+    #                 trainingInstance.train_transE(lr, simi, margin, k)
+    #                 trainingInstance.evaluate("valid")
+    #
+    #                 print("Let's rest for 15 seconds")
+    #                 print()
+    #                 time.sleep(15)
+    #
+    # print(results)
+    #
+    # endTime = time.localtime()
+    #
+    # duration = (time.mktime(endTime) - time.mktime(startTime))/60
+    # print("Total duration is %s minutes" % duration)
+
+
+if __name__ == "__main__":
+    main()
+
+
 
 
 
