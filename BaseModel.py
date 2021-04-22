@@ -17,6 +17,40 @@ class BaseModel(nn.Module):
 
         # declare relation categories
         # this is to evaluate the performance for different relations respectively
+
+        # WN18:
+        # {'_also_see': 0,
+        #  '_derivationally_related_form': 1,
+        #  '_has_part': 2,
+        #  '_hypernym': 3,
+        #  '_hyponym': 4,
+        #  '_instance_hypernym': 5,
+        #  '_instance_hyponym': 6,
+        #  '_member_holonym': 7,
+        #  '_member_meronym': 8,
+        #  '_member_of_domain_region': 9,
+        #  '_member_of_domain_topic': 10,
+        #  '_member_of_domain_usage': 11,
+        #  '_part_of': 12,
+        #  '_similar_to': 13,
+        #  '_synset_domain_region_of': 14,
+        #  '_synset_domain_topic_of': 15,
+        #  '_synset_domain_usage_of': 16,
+        #  '_verb_group': 17}
+
+        # WN18RR:
+        # {0: '_also_see',
+        #  1: '_derivationally_related_form',
+        #  2: '_has_part',
+        #  3: '_hypernym',
+        #  4: '_instance_hypernym',
+        #  5: '_member_meronym',
+        #  6: '_member_of_domain_region',
+        #  7: '_member_of_domain_usage',
+        #  8: '_similar_to',
+        #  9: '_synset_domain_topic_of',
+        #  10: '_verb_group'}
+
         self.hyponym_set = {4, 6} if dataset == 'wn18' else {}
         self.hypernym_set = {3, 5} if dataset == 'wn18' else {3, 4}
         self.synonym_set = {0, 1, 13, 17} if dataset == 'wn18' else {0, 1, 8, 10}
@@ -31,9 +65,11 @@ class BaseModel(nn.Module):
             return 1
         elif i in self.synonym_set:
             return 2
-        else:
-            # context shift
+        elif i in self.context_shift_set:
             return 3
+        else:
+            pass
+            # TODO: throw an exception for invalid relation number
 
     def margincost(self, pos, neg):
 

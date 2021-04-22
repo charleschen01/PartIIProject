@@ -8,6 +8,8 @@ from collections import defaultdict
 # we first assign ids for relations/entities and create mappings
 # this would be useful later for creating the sparse matrix
 
+# TODO: we want to change all names "entity" to "synset"
+
 entitylist = []
 relationlist = []
 

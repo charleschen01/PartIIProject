@@ -52,13 +52,12 @@ class RelationEmbeddingModel(BaseModel):
         # pass the data through our first layer to get a list of entity embeddings
         leftEnEmbeddings = self.entityEmbedding(leftEnIndices)   # we get a list of embeddings
         rightEnEmbeddings = self.entityEmbedding(rightEnIndices)
+        relEmbeddings = self.relationEmbedding(relIndices)
         negLeftEnEmbeddings = self.entityEmbedding(negLeftEnIndices)
         negRightEnEmbeddings = self.entityEmbedding(negRightEnIndices)
 
         # second layer
         # we get relation embedding and calculate loss
-
-        relEmbeddings = self.relationEmbedding(relIndices)
 
         # calculate score for the original triplet
         # validScores is a list of scores
@@ -74,7 +73,7 @@ class RelationEmbeddingModel(BaseModel):
         costr = self.margincost(validScores, negRightScores)
         cost = costl + costr
 
-        # TODO: add regularisation here
+        # if the model is DistMult, we want to add an extra regularisation term
         if self.whoami == "DistMult":
             regularisation = 0.0001 * torch.norm(relEmbeddings, dim=1)
             cost += regularisation
