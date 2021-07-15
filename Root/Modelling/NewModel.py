@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from BaseModel import BaseModel
+from Root.Modelling.BaseModel import BaseModel
 
 class NewModel(BaseModel):
 
@@ -15,19 +15,17 @@ class NewModel(BaseModel):
     def L1Norm(self, embedding):
         return torch.sum(torch.abs(embedding), dim=1)
 
-    def __init__(self, simi, **kwargs):
+    def __init__(self, norm, **kwargs):
 
         super().__init__(**kwargs)
         self.whoami = "NewModel"
 
-        # TODO: check; we might want to use another simi design
-        if simi == "L1":
+        if norm == "L1":
             self.normFunc = self.L1Norm
-        elif simi == "L2":
+        elif norm == "L2":
             self.normFunc = self.L2Norm
         else:
-            # TODO: throw exception if we pass in an invalid simi function
-            pass
+            raise ValueError("Invalid norm input!")
 
         # initialise embeddings for the first layer
 
@@ -56,8 +54,6 @@ class NewModel(BaseModel):
         # we pass in indices for relation, entities as well as negative entities
         # these indices are in the form of long tensor
         # group is an integer, denoting the relation group this batch belongs
-
-        # TODO: we might want to change the name because we are using "synset" instead of "entity"
 
         leftEnIndices, rightEnIndices, relIndices, negLeftEnIndices, negRightEnIndices, group = x
 
@@ -100,6 +96,11 @@ class NewModel(BaseModel):
         costr = self.margincost(validScores, negRightScores)
         cost = costl + costr
 
+        # if the relation is synonym and we are using DistMult, we want to add an extra regularisation term
+        if group == 2:
+            regularisation = 0.0001 * torch.norm(self.relationEmbedding(relIndices), dim=1)
+            cost += regularisation
+
         # DEBUG: to find nan value in predicate embeddings
         # for i, x in enumerate(cost):
         #     if math.isnan(x):
@@ -129,9 +130,6 @@ class NewModel(BaseModel):
         # we take average so the final output is only one value
         mean_cost = torch.mean(cost)
 
-        if self.GPU:
-            mean_cost = mean_cost.to(torch.device('cpu'))
-
         return mean_cost
 
     # this is the key part of our model
@@ -145,15 +143,15 @@ class NewModel(BaseModel):
             # A <-> B; B is a hyponym of A, A is more general than B
 
             # if pixie is a normalised vector
-            # (|v1-v2|L2 - (a1-a2))+
+            # ((a_o - a_s) - ||v_s-v_o||)-
             vecDiff = self.normFunc(leftEnVec - rightEnVec)
             biasDiff = torch.reshape(leftEnBias - rightEnBias, (-1,))
             # -1 means the shape is inferred
-            rawScore = vecDiff - biasDiff
-            return - rawScore * (rawScore > 0)
+            rawScore = biasDiff - vecDiff
+            # take the negative part of the raw score
+            return rawScore * (rawScore < 0)
 
-            # TODO: implement the other case
-            # trying a new method
+            # the other case when pixie x takes value from [0,1]
             # s is sum of all (v1-v2) negative terms
             # ((a2-a1)-s)+
             # diff = leftEnVec - rightEnVec
@@ -165,13 +163,13 @@ class NewModel(BaseModel):
         elif group == 1:
             # hypernym
             # A <-> B; B is a hypernym of A, B is more general than A
-            # (|v1-v2|L2 - (a2-a1))+
+            # ((a_s - a_o) - ||v_o-v_s||)-
             vecDiff = self.normFunc(leftEnVec - rightEnVec)
             biasDiff = torch.reshape(rightEnBias - leftEnBias, (-1,))
-            rawScore = vecDiff - biasDiff
-            return - rawScore * (rawScore > 0)
+            rawScore = biasDiff - vecDiff
+            return rawScore * (rawScore < 0)
 
-            # TODO: implement the other case
+            # the other case; probably not needed
             # trying a new method
             # calculate sum of all (v1-v2) positive terms
             # ((diff-(a2-a1))+
@@ -184,15 +182,14 @@ class NewModel(BaseModel):
         elif group == 2:
             # synonym
             # |v1-v2|L2 + |a1-a2|
-            vecDiff = self.normFunc(leftEnVec - rightEnVec)
-            biasDiff = torch.abs(torch.reshape(leftEnBias - rightEnBias, (-1,)))
-            return -(vecDiff + biasDiff)
+            # vecDiff = self.normFunc(leftEnVec - rightEnVec)
+            # biasDiff = torch.abs(torch.reshape(leftEnBias - rightEnBias, (-1,)))
+            # return - (vecDiff + biasDiff)
 
-            # DistMult approach:
-            # relEmbedding = self.relationEmbedding(relIndices)
-            # matrixProduct = torch.sum(leftEnVec * relEmbedding * rightEnVec, dim=1)
-            # regularisation = 0.0001 * torch.norm(relEmbedding, dim=1)
-            # return (matrixProduct + regularisation) * 0.2
+            # TODO: DistMult approach:
+            relEmbedding = self.relationEmbedding(relIndices)
+            matrixProduct = torch.sum(leftEnVec * relEmbedding * rightEnVec, dim=1)
+            return matrixProduct * 0.25
 
         else:
             # context shift
@@ -201,7 +198,7 @@ class NewModel(BaseModel):
             return -self.normFunc(leftEnVec + relEmbedding - rightEnVec)
 
     # the two functions below are used for evaluation
-    def evaluateLeftScores(self, rel, right):
+    def evaluateSubjectScores(self, rel, right):
 
         # we need to return a list of scores over all possible left entities, in the form of Tensor
         # this operation is fast, because rel is fixed, and we can do batch calculation
@@ -230,7 +227,7 @@ class NewModel(BaseModel):
         # torch will do the broadcasting for us
         return self.tripletScore(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group).detach()
 
-    def evaluateRightScores(self, left, rel):
+    def evaluateObjectScores(self, left, rel):
 
         # return a list of correctness scores over all possible right entities, in the form of Tensor
 
@@ -251,4 +248,4 @@ class NewModel(BaseModel):
 
         group = self.relGroup(rel)
 
-        return self.crtFunc(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group).detach()
+        return self.tripletScore(leftEnVec, leftEnBias, relationIndex, rightEnVec, rightEnBias, group).detach()

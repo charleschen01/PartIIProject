@@ -1,16 +1,13 @@
 import scipy.sparse
 import pickle
 import numpy as np
-from TransE import TransE
-from DistMult import DistMult
-from NewModel import NewModel
-
-# TODO: remove this later
-from extract_hypernym import extractHypernym
+import time
+from Root.Modelling.TransE import TransE
+from Root.Modelling.DistMult import DistMult
+from Root.Modelling.NewModel import NewModel
 
 # optimiser
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 import torch.nn.functional as F
@@ -36,7 +33,7 @@ class Experiment:
         # eventually we will be able to get [idx for entity in triplet 1, idx for entity in triplet 2, ...]
 
     # dataset and GPU are Experiment specific parameters
-    def __init__(self, dataset, GPU=False, HypernymOnly=False):
+    def __init__(self, dataset, GPU=False):
 
         # load the 4 dictionaries for entities and relations
         # and another 2 dictionary for generating corrupted triplets
@@ -81,7 +78,6 @@ class Experiment:
         testRel = self.load_file("./data/%s_test_rel" % self.dataset)
         testRight = self.load_file("./data/%s_test_rhs" % self.dataset)
 
-
         # index conversion
         # these are lists of indices that we can directly feed into our first layer
         self.trainLeftIndex = self.convert2idx(trainLeft)
@@ -94,32 +90,15 @@ class Experiment:
         self.testRelIndex = self.convert2idx(testRel)
         self.testRightIndex = self.convert2idx(testRight)
 
-
-        # TODO: here we change the indices bc we only want to test on Hypernym relations
-        # TODO: maybe we want to keep it and mention this process in diss?
-        # we must make sure that in this case, we don't touch on test dataset
-
-        # here, we extract triplets that only have to do with Hypernym relations
-        # again, validation set only contains synsets that appear in training set
-        if HypernymOnly:
-            hypernymCombo = extractHypernym(self.trainLeftIndex, self.trainRelIndex, self.trainRightIndex,
-                            self.validLeftIndex, self.validRelIndex, self.validRightIndex)
-            self.trainLeftIndex = hypernymCombo[0]
-            self.trainRelIndex = hypernymCombo[1]
-            self.trainRightIndex = hypernymCombo[2]
-            self.validLeftIndex = hypernymCombo[3]
-            self.validRelIndex = hypernymCombo[4]
-            self.validRightIndex = hypernymCombo[5]
-
     # in this function, we specify the model the hyper-parameters we want to use
-    # simi is only passed when we use TransE or NewModel
-    def trainModel(self, model, optimizer, lr, margin, dimension, simi="None",
+    # norm is only passed when we use TransE or NewModel
+    def trainModel(self, model, optimizer, lr, margin, dimension, norm="None",
                    num_epochs = 50,
                    num_batches = 10):
 
         # initialise the neural network
         if model == "TransE":
-            self.model = TransE(simi=simi,
+            self.model = TransE(norm=norm,
                                 numEntity=self.numSynset,
                                 numRelation=self.numRelation,
                                 dimension=dimension,
@@ -134,7 +113,7 @@ class Experiment:
                                   dataset=self.dataset,
                                   GPU=self.GPU)
         elif model == "NewModel":
-            self.model = NewModel(simi=simi,
+            self.model = NewModel(norm=norm,
                                   numEntity=self.numSynset,
                                   numRelation=self.numRelation,
                                   dimension=dimension,
@@ -142,18 +121,29 @@ class Experiment:
                                   dataset=self.dataset,
                                   GPU=self.GPU)
 
+        # perform training on GPU if we are on GPU mode
+        if self.GPU:
+            self.model = self.model.to(torch.device('cuda:0'))
+
         # here, we start the training process
         if optimizer == "Adam":
             self.optimizer = optim.Adam(self.model.parameters(), lr)
         elif optimizer == "Adagrad":
             self.optimizer = optim.Adagrad(self.model.parameters(), lr)
+        elif optimizer == "SGD":
+            self.optimizer = optim.SGD(self.model.parameters(), lr)
+        else:
+            raise ValueError("Invalid optimizer input!")
 
         print("Start training on {0}...")
         print("Parameters: "
               "Optimizer: {1}, "
               "Learning rate: {2}, "
               "Margin: {3}, "
-              "Dimension: {4}, ".format(model, optimizer, lr, margin, dimension))
+              "Dimension: {4}, "
+              "Norm: {5},"
+              "Number of epochs: {6}, "
+              "Number of batches: {7}".format(model, optimizer, lr, margin, dimension, norm, num_epochs, num_batches))
 
         # if we are using the new model, we want to call a seperate training function, because we need to differentiate
         # different relations
@@ -167,10 +157,6 @@ class Experiment:
         batchSize = math.ceil(inputSize/num_batches)
 
         finalEpochLoss = 0
-
-        # perform training on GPU if we are on GPU mode
-        if self.GPU:
-            self.model = self.model.to(torch.device('cuda:0'))
 
         for epoch_count in range(num_epochs):
 
@@ -192,15 +178,17 @@ class Experiment:
             # similarly, trainRightIndex and trainNegLeftIndex should not have any same term
             # TODO: why do we need to do so? is it because errors will be thrown otherwise?
             # TODO: I cannot think of a good reason; this might be necessary only for the new model
-            for bad_index in np.where(trainLeftIndex - trainNegRightIndex == 0)[0]:
-                while trainNegRightIndex[bad_index] == trainLeftIndex[bad_index]:
-                    # keep choosing random values until not the same
-                    trainNegRightIndex[bad_index] = np.random.choice(self.numSynset)
+            # I disable it for now, should be fine
 
-            for bad_index in np.where(trainRightIndex - trainNegLeftIndex == 0)[0]:
-                while trainRightIndex[bad_index] == trainNegLeftIndex[bad_index]:
-                    # keep choosing random values until not the same
-                    trainNegLeftIndex[bad_index] = np.random.choice(self.numSynset)
+            # for bad_index in np.where(trainLeftIndex - trainNegRightIndex == 0)[0]:
+            #     while trainNegRightIndex[bad_index] == trainLeftIndex[bad_index]:
+            #         # keep choosing random values until not the same
+            #         trainNegRightIndex[bad_index] = np.random.choice(self.numSynset)
+            #
+            # for bad_index in np.where(trainRightIndex - trainNegLeftIndex == 0)[0]:
+            #     while trainRightIndex[bad_index] == trainNegLeftIndex[bad_index]:
+            #         # keep choosing random values until not the same
+            #         trainNegLeftIndex[bad_index] = np.random.choice(self.numSynset)
 
             for i in range(num_batches):
 
@@ -261,10 +249,10 @@ class Experiment:
             indicesForThisGroup = np.where(groupAllocation == group)[0]
             trainLeftIndexGrouped[group] = self.trainLeftIndex[indicesForThisGroup]
             trainRightIndexGrouped[group] = self.trainRightIndex[indicesForThisGroup]
-            # TODO: we need to change this if we are not using DistMult for synonym case
-            if group == 2 or group == 3:
-                # we only need relation embedding for synonym and context shift case
-                # when group is 0 or 1, rel index array will be None
+            # TODO: we need to change this if we are using DistMult for synonym case
+            if group == 3 or group == 2:
+                # we only need relation embedding for context shift case and synonym (if distmult)
+                # when group is 0 or 1 (or 2), rel index array will be None
                 trainRelIndexGrouped[group] = self.trainRelIndex[indicesForThisGroup]
 
         # we've done our grouping, now start training process
@@ -274,10 +262,6 @@ class Experiment:
         # if we are using the new model, num_batches is only a reference and the actual number may be slightly bigger
 
         finalEpochLoss = 0
-
-        # perform training on GPU if we are on GPU mode
-        if self.GPU:
-            self.model = self.model.to(torch.device('cuda:0'))
 
         for epoch_count in range(num_epochs):
 
@@ -297,8 +281,9 @@ class Experiment:
                 order = np.random.permutation(size)
                 trainLeftIndexGrouped[group] = trainLeftIndexGrouped[group][order]
                 trainRightIndexGrouped[group] = trainRightIndexGrouped[group][order]
-                if group == 2 or group == 3:
-                    # only use relation embedding when we are in the synonym case or context shift case
+                # TODO: change here
+                if group == 3 or group == 2:
+                    # only use relation embedding when we are in the context shift case (or the synonym case)
                     trainRelIndexGrouped[group] = trainRelIndexGrouped[group][order]
                 # generate negative synsets
                 trainNegLeftIndexGrouped[group] = np.random.choice(self.numSynset, size, replace=True)
@@ -340,9 +325,9 @@ class Experiment:
                     batchLeftIndex = torch.LongTensor(trainLeftIndexGrouped[group][start:end])
                     batchRightIndex = torch.LongTensor(trainRightIndexGrouped[group][start:end])
                     # we only generate rel embeddings when group is 3
-                    # TODO: might treat everything else as translation
+                    # TODO: need to include group 2 after we use distmult for synonynm
                     batchRelIndex = torch.LongTensor(trainRelIndexGrouped[group][start:end]
-                                                     if group == 2 or group == 3
+                                                     if group == 3 or group == 2
                                                      else [])
                     batchNegLeftIndex = torch.LongTensor(trainNegLeftIndexGrouped[group][start:end])
                     batchNegRightIndex = torch.LongTensor(trainNegRightIndexGrouped[group][start:end])
@@ -445,8 +430,7 @@ class Experiment:
 
         # input:
         # targetSet is either "validation" or "test" or "training"
-
-        # TODO: maybe we want to pass in an additonal parameter to indicate whether we want to split relations
+        # relationSplit is an additonal parameter to indicate whether we want to split relations
 
         # move to GPU, because evaluation can be parallelised
         if self.GPU:
@@ -459,22 +443,21 @@ class Experiment:
         rank = []
         relations = []
         if targetSet == "valid":
-            rank = self.rankScore(self.validLeftIndex, self.validRelIndex, self.validRightIndex)
+            rank = self.generateRank(self.validLeftIndex, self.validRelIndex, self.validRightIndex)
             if relationSplit:
                 relations = self.validRelIndex # relations used to classify different relations
         elif targetSet == "test":
-            rank = self.rankScore(self.testLeftIndex, self.testRelIndex, self.testRightIndex)
+            rank = self.generateRank(self.testLeftIndex, self.testRelIndex, self.testRightIndex)
             if relationSplit:
                 relations = self.testRelIndex
         elif targetSet == "train":
             # we evaluate the first 2000 triplets of training set
             # maybe can increase this number after we can run our code on GPU
-            rank = self.rankScore(self.trainLeftIndex[0:2000], self.trainRelIndex[0:2000], self.trainRightIndex[0:2000])
+            rank = self.generateRank(self.trainLeftIndex[0:2000], self.trainRelIndex[0:2000], self.trainRightIndex[0:2000])
             if relationSplit:
                 relations = self.trainRelIndex[0:2000]
         else:
-            # TODO: throw errors
-            pass
+            raise ValueError("Invalid target set argument!")
 
         # the overall dataset
         rankArray = np.asarray(rank[0] + rank[2])
@@ -487,8 +470,9 @@ class Experiment:
         if relationSplit:
             groupArray = np.array([self.model.relGroup(rel) for rel in relations])
             for relGroup in range(4):
+                # for each relation, we first get all the indices for that relation
                 indices = np.where(groupArray == relGroup)[0]
-                # extracts out ranks for the correct relation
+                # then extracts out ranks for the correct relation
                 rankArray = np.concatenate((np.asarray(rank[0])[indices], np.asarray(rank[2])[indices]))
                 reciRankArray = np.concatenate((np.asarray(rank[1])[indices], np.asarray(rank[3])[indices]))
                 print("Results for relation %s:" % relGroup)
@@ -518,7 +502,7 @@ class Experiment:
         print("Hits@1 is %s" % hitsAt1)
         print()
 
-    def rankScore(self, idxLeft, idxRel, idxRight):
+    def generateRank(self, idxLeft, idxRel, idxRight):
 
         # calculate predicted ranks for triplets
 
@@ -546,13 +530,13 @@ class Experiment:
             leftIgnoreList = [entity for entity in self.relRight2Left[(rel, right)] if entity != left]
 
             # if we are using the new model and the relation is synonym, we want to add right to the ignoreList
-            # having the same entity on both sides will give the same best score
-            # we don't want to always include a triplet that gives the best score
-            if self.model.whoami == "newModel" and self.model.relGroup(rel) == 2:
-                leftIgnoreList.append(right)
+            # having the same entity on both sides might give the best score
+            # we don't want to include a triplet that gives the best score
+            # or, it doesn't make much sense to do scoring for a triplet where both sides are the same
+            leftIgnoreList.append(right)
 
             # generate the scores for all possible left entities first
-            leftScores = self.model.evaluateLeftScores(rel, right)
+            leftScores = self.model.evaluateSubjectScores(rel, right)
 
             # our ranking favours higher scores
             # set scores for ignored entities to be -infinite, so that we can ignore them in our ranking
@@ -567,7 +551,6 @@ class Experiment:
             # use the where operation in numpy
             leftIdxRank = torch.argsort(leftScores, descending=True)
 
-            # TODO: study why switching happens here
             # switch back to CPU once we start dealing with numpy arrays
             if self.GPU:
                 leftIdxRank = leftIdxRank.to(torch.device('cpu'))
@@ -579,11 +562,10 @@ class Experiment:
 
             # generate the right corrupted triplets in a similar fashion
             rightIgnoreList = [entity for entity in self.leftRel2Right[(left, rel)] if entity != right]
-            if self.model.whoami == "newModel" and self.model.relGroup(rel) == 2:
-                rightIgnoreList.append(left)
+            rightIgnoreList.append(left)
 
             # similarly, calculate rank of right
-            rightScores = self.model.evaluateRightScores(left, rel)
+            rightScores = self.model.evaluateObjectScores(left, rel)
 
             rightScores[rightIgnoreList] = float('-inf')
             rightIdxRank = torch.argsort(rightScores, descending=True)
@@ -599,16 +581,23 @@ class Experiment:
         return [leftRankList, leftReciRankList, rightRankList, rightReciRankList]
 
 def main():
-    experimentInstance = Experiment("wn18", GPU=False)
-    experimentInstance.trainModel(model="TransE",
-                                  optimizer="Adam",
-                                  lr=0.01,
-                                  margin=1,
-                                  dimension=100,
-                                  simi="L2",
-                                  num_epochs=50,
-                                  num_batches=10)
-    experimentInstance.evaluate("valid", relationSplit=True)
+    startTime = time.localtime()
+
+    e = Experiment("wn18rr", GPU=False)
+    e.trainModel(model="NewModel",
+                 optimizer="Adagrad",
+                 lr=0.1,
+                 margin=1,
+                 dimension=100,
+                 norm="L2",
+                 num_epochs=100,
+                 num_batches=10)
+    e.evaluate("valid", relationSplit=False)
+
+    endTime = time.localtime()
+
+    duration = (time.mktime(endTime) - time.mktime(startTime))/60
+    print("Total duration is %s minutes" % duration)
 
     # transE
     # trainingInstance.train_transE(0.01, "L2", 1, 20)
@@ -649,11 +638,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-

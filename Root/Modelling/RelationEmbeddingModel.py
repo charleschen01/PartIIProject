@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from abc import abstractmethod
 
-from BaseModel import BaseModel
+from Root.Modelling.BaseModel import BaseModel
 
 class RelationEmbeddingModel(BaseModel):
 
@@ -28,15 +28,12 @@ class RelationEmbeddingModel(BaseModel):
         self.entityEmbedding.weight.data = torch.FloatTensor(self.numEntity, self.dimension).uniform_(-6.0/k_root, 6.0/k_root)
         self.entityEmbedding.weight.data = F.normalize(self.entityEmbedding.weight.data)
         self.relationEmbedding.weight.data = torch.FloatTensor(self.numRelation, self.dimension).uniform_(-6.0/k_root, 6.0/k_root)
-        self.relationEmbedding.weight.data = F.normalize(self.relationEmbedding.weight.data)
 
     @abstractmethod
     def tripletScore(self, leftEnEmbeddings, relEmbeddings, rightEnEmbeddings):
         pass
 
     def forward(self, x):
-
-        # TODO: another major bit to edit is to add a regularisation term for DistMult when we are caluclating the final costs
 
         # we pass in indices for relation, entities as well as negative entities
         leftEnIndices, rightEnIndices, relIndices, negLeftEnIndices, negRightEnIndices = x
@@ -82,15 +79,11 @@ class RelationEmbeddingModel(BaseModel):
         # take average so we return a scalar value
         mean_cost = torch.mean(cost)
 
-        # move the result back to CPU
-        if self.GPU:
-            mean_cost = mean_cost.to(torch.device('cpu'))
-
         return mean_cost
 
 
     # the two functions below are for evaluation
-    def evaluateLeftScores(self, rel, right):
+    def evaluateSubjectScores(self, rel, right):
 
         # we need to return a list of scores over all the corrupted left entities
 
@@ -107,9 +100,9 @@ class RelationEmbeddingModel(BaseModel):
         relationEmbedding = self.relationEmbedding(relationIndices)
         rightEnEmbedding = self.entityEmbedding(rightIndices)
 
-        return self.scoreFunc(leftEnEmbedding, relationEmbedding, rightEnEmbedding).detach()
+        return self.tripletScore(leftEnEmbedding, relationEmbedding, rightEnEmbedding).detach()
 
-    def evaluateRightScores(self, left, rel):
+    def evaluateObjectScores(self, left, rel):
 
         # return a list of similarity scores over all possible right entities
 
@@ -126,4 +119,4 @@ class RelationEmbeddingModel(BaseModel):
         relationEmbedding = self.relationEmbedding(relationIndices)
         rightEnEmbedding = self.entityEmbedding(rightIndices)
 
-        return self.scoreFunc(leftEnEmbedding, relationEmbedding, rightEnEmbedding).detach()
+        return self.tripletScore(leftEnEmbedding, relationEmbedding, rightEnEmbedding).detach()

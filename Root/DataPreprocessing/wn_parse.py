@@ -148,21 +148,3 @@ print("Number of words is %s" % len(idx2word))
 f = open('./data/entity2word', 'wb')
 pickle.dump(idx2word, f)
 f.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

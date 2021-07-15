@@ -1,30 +1,22 @@
 import torch
 
-from RelationEmbeddingModel import RelationEmbeddingModel
+from Root.Modelling.RelationEmbeddingModel import RelationEmbeddingModel
 
 class TransE(RelationEmbeddingModel):
 
 
-    def __init__(self, simi, **kwds):
+    def __init__(self, norm, **kwds):
 
         # **kwds refers to the parameters in the base model
         super().__init__(**kwds)
 
         self.whoami = "TransE"
-        self.simi = simi
+        self.norm = norm
 
     def tripletScore(self, leftEnEmbeddings, relEmbeddings, rightEnEmbeddings):
-        if self.simi == "L1":
+        if self.norm == "L1":
             return -torch.sum(torch.abs(leftEnEmbeddings + relEmbeddings - rightEnEmbeddings), dim=1)
-        elif self.simi == "L2":
+        elif self.norm == "L2":
             return -torch.sqrt(torch.sum(torch.square(leftEnEmbeddings + relEmbeddings - rightEnEmbeddings), dim=1))
         else:
-            # TODO: throw an error here that we passed in an invalid simi argument
-            pass
-
-
-
-
-
-
-
+            raise ValueError("Invalid norm input!")

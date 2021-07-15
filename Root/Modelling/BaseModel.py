@@ -68,8 +68,7 @@ class BaseModel(nn.Module):
         elif i in self.context_shift_set:
             return 3
         else:
-            pass
-            # TODO: throw an exception for invalid relation number
+            raise ValueError("Invalid relation index!")
 
     def margincost(self, pos, neg):
 
@@ -90,9 +89,9 @@ class BaseModel(nn.Module):
     # functions for evaluation
     # for these two functions, one's defined in relation embedding model, the other defined in new model
     @abstractmethod
-    def evaluateLeftScores(self, rel, right):
+    def evaluateSubjectScores(self, rel, right):
         pass
 
     @abstractmethod
-    def evaluateRightScores(self, left, rel):
+    def evaluateObjectScores(self, left, rel):
         pass

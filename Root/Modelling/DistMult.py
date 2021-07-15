@@ -1,11 +1,6 @@
 import torch
 
-import torch.nn as nn
-import torch.nn.functional as F
-
-from RelationEmbeddingModel import RelationEmbeddingModel
-
-# TODO: utilise the base class
+from Root.Modelling.RelationEmbeddingModel import RelationEmbeddingModel
 
 class DistMult(RelationEmbeddingModel):
 
@@ -18,5 +13,3 @@ class DistMult(RelationEmbeddingModel):
     def tripletScore(self, leftEnEmbeddings, relEmbeddings, rightEnEmbeddings):
         matrixProduct = torch.sum(leftEnEmbeddings*relEmbeddings*rightEnEmbeddings, dim=1)
         return matrixProduct
-
-
